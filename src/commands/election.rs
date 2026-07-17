@@ -78,6 +78,7 @@ pub async fn create(
 
     if let Some(specs) = specs {
         println!("   adding {} candidate(s):", specs.len());
+        let mut failures = 0;
         for c in specs {
             let req = client.request(AddCandidateRequest {
                 election_id: election.id.clone(),
@@ -87,9 +88,13 @@ pub async fn create(
             match client.inner().add_candidate(req).await {
                 Ok(_) => println!("     ✅ {} — {}", c.id, c.name),
                 Err(status) => {
+                    failures += 1;
                     println!("     ❌ {} — {}: {}", c.id, c.name, status.message())
                 }
             }
+        }
+        if failures > 0 {
+            anyhow::bail!("failed to add {failures} candidate(s)");
         }
     }
     Ok(())
@@ -121,10 +126,9 @@ pub async fn list(client: &mut EcClient) -> Result<()> {
 pub async fn cancel(client: &mut EcClient, election_id: String) -> Result<()> {
     let req = client.request(ElectionIdRequest { election_id });
     let status = client.inner().cancel_election(req).await?.into_inner();
-    if status.success {
-        println!("✅ {}", status.message);
-    } else {
-        println!("❌ {}", status.message);
+    if !status.success {
+        anyhow::bail!("cancellation failed: {}", status.message);
     }
+    println!("✅ {}", status.message);
     Ok(())
 }
