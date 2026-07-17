@@ -6,6 +6,8 @@ pub mod candidates;
 pub mod cli;
 pub mod client;
 pub mod commands;
+pub mod error;
+pub mod output;
 pub mod time;
 
 /// Generated protobuf types for the `proto.admin` package.

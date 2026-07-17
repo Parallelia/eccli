@@ -5,6 +5,7 @@ use clap::{ArgGroup, Parser, Subcommand};
 
 use crate::client::EcClient;
 use crate::commands::{candidate, election, token};
+use crate::output::{self, OutputMode};
 
 #[derive(Parser)]
 #[command(
@@ -25,6 +26,14 @@ pub struct Cli {
     /// Admin bearer token (only needed when the ec sets EC_ADMIN_TOKEN).
     #[arg(long, global = true, env = "EC_ADMIN_TOKEN", hide_env_values = true)]
     pub token: Option<String>,
+
+    /// Emit machine-readable JSON instead of human-readable output.
+    #[arg(long, global = true)]
+    pub json: bool,
+
+    /// Skip confirmation prompts (required for destructive ops in scripts).
+    #[arg(short = 'y', long, global = true)]
+    pub yes: bool,
 
     #[command(subcommand)]
     pub command: Commands,
@@ -117,13 +126,40 @@ pub enum Commands {
     },
 }
 
-/// Parse arguments, connect to the ec daemon, and dispatch the command.
+/// Parse arguments and run, formatting any error per the selected output mode.
 pub async fn run() -> Result<()> {
     let cli = Cli::parse();
+    let mode = OutputMode::resolve(cli.json);
+
+    if let Err(e) = execute(cli, mode).await {
+        match mode {
+            OutputMode::Json => output::emit_json_error(&e.to_string()),
+            OutputMode::Human { .. } => eprintln!("Error: {e:#}"),
+        }
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// Connect to the ec daemon and dispatch the requested command.
+async fn execute(cli: Cli, mode: OutputMode) -> Result<()> {
+    // Pre-flight confirmation for destructive commands, before we connect.
+    if let Commands::CancelElection { election_id } = &cli.command {
+        if !cli.yes {
+            if mode.is_json() {
+                anyhow::bail!("refusing to cancel without --yes in --json mode");
+            }
+            if !output::confirm(&format!("Cancel election {election_id}?"))? {
+                println!("Aborted; no changes made.");
+                return Ok(());
+            }
+        }
+    }
+
     let mut client = EcClient::connect(&cli.server, cli.token.as_deref()).await?;
 
     match cli.command {
-        Commands::Check => election::check(&mut client).await,
+        Commands::Check => election::check(&mut client, mode).await,
         Commands::CreateElection {
             name,
             start_time,
@@ -135,6 +171,7 @@ pub async fn run() -> Result<()> {
         } => {
             election::create(
                 &mut client,
+                mode,
                 name,
                 start_time,
                 duration,
@@ -149,17 +186,19 @@ pub async fn run() -> Result<()> {
             election_id,
             candidate_id,
             name,
-        } => candidate::add(&mut client, election_id, candidate_id, name).await,
-        Commands::GetElection { election_id } => election::get(&mut client, election_id).await,
-        Commands::ListElections => election::list(&mut client).await,
+        } => candidate::add(&mut client, mode, election_id, candidate_id, name).await,
+        Commands::GetElection { election_id } => {
+            election::get(&mut client, mode, election_id).await
+        }
+        Commands::ListElections => election::list(&mut client, mode).await,
         Commands::CancelElection { election_id } => {
-            election::cancel(&mut client, election_id).await
+            election::cancel(&mut client, mode, election_id).await
         }
         Commands::GenerateTokens {
             election_id,
             count,
             output,
-        } => token::generate(&mut client, election_id, count, output).await,
-        Commands::ListTokens { election_id } => token::list(&mut client, election_id).await,
+        } => token::generate(&mut client, mode, election_id, count, output).await,
+        Commands::ListTokens { election_id } => token::list(&mut client, mode, election_id).await,
     }
 }
