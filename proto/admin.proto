@@ -1,0 +1,75 @@
+syntax = "proto3";
+package proto.admin;
+
+service Admin {
+  rpc AddElection (AddElectionRequest) returns (ElectionResponse);
+  rpc AddCandidate (AddCandidateRequest) returns (CandidateResponse);
+  rpc CancelElection (ElectionIdRequest) returns (StatusResponse);
+  rpc GetElection (ElectionIdRequest) returns (ElectionResponse);
+  rpc ListElections (Empty) returns (ElectionListResponse);
+  rpc GenerateRegistrationTokens (GenerateTokensRequest) returns (TokensResponse);
+  rpc ListRegistrationTokens (ElectionIdRequest) returns (TokenListResponse);
+}
+
+message Empty {}
+
+message AddElectionRequest {
+  string name = 1;
+  int64 start_time = 2;
+  int64 end_time = 3;
+  string rules_id = 4;
+}
+
+message AddCandidateRequest {
+  string election_id = 1;
+  uint32 id = 2;
+  string name = 3;
+}
+
+message ElectionIdRequest {
+  string election_id = 1;
+}
+
+message GenerateTokensRequest {
+  string election_id = 1;
+  uint32 count = 2;
+}
+
+message ElectionResponse {
+  string id = 1;
+  string name = 2;
+  int64 start_time = 3;
+  int64 end_time = 4;
+  string status = 5;
+  string rules_id = 6;
+  string rsa_pub_key = 7;
+  int64 created_at = 8;
+}
+
+message CandidateResponse {
+  uint32 id = 1;
+  string election_id = 2;
+  string name = 3;
+}
+
+message StatusResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message ElectionListResponse {
+  repeated ElectionResponse elections = 1;
+}
+
+message TokensResponse {
+  repeated string tokens = 1;
+}
+
+message TokenListResponse {
+  repeated TokenInfo tokens = 1;
+}
+
+message TokenInfo {
+  string token_id = 1;
+  bool used = 2;
+}
