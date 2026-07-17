@@ -36,9 +36,9 @@ pub fn compute_window(
             if d <= 0 {
                 bail!("--duration must be a positive number of seconds");
             }
-            start_ts
-                .checked_add(d)
-                .ok_or_else(|| anyhow::anyhow!("duration {d} overflows the start time {start_ts}"))?
+            start_ts.checked_add(d).ok_or_else(|| {
+                anyhow::anyhow!("duration {d} overflows the start time {start_ts}")
+            })?
         }
         (None, Some(e)) => resolve_ts(e, now)?,
     };
