@@ -2,3 +2,4 @@
 
 pub mod candidate;
 pub mod election;
+pub mod token;
