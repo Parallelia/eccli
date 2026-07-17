@@ -43,8 +43,7 @@ async fn get_election_shows_metadata() {
 #[tokio::test]
 async fn get_missing_election_maps_not_found() {
     let url = common::start_fake().await;
-    let out =
-        common::run_eccli(&["--server", &url, "get-election", "-e", "missing"]).await;
+    let out = common::run_eccli(&["--server", &url, "get-election", "-e", "missing"]).await;
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("election id"), "stderr was: {stderr}");
@@ -81,7 +80,16 @@ async fn create_election_with_candidates() {
 async fn add_candidate_succeeds() {
     let url = common::start_fake().await;
     let out = common::run_eccli(&[
-        "--server", &url, "--json", "add-candidate", "-e", "el-1", "-c", "3", "-n", "Carol",
+        "--server",
+        &url,
+        "--json",
+        "add-candidate",
+        "-e",
+        "el-1",
+        "-c",
+        "3",
+        "-n",
+        "Carol",
     ])
     .await;
     assert!(out.status.success());
@@ -93,9 +101,16 @@ async fn add_candidate_succeeds() {
 #[tokio::test]
 async fn cancel_election_with_yes() {
     let url = common::start_fake().await;
-    let out =
-        common::run_eccli(&["--server", &url, "--json", "--yes", "cancel-election", "-e", "el-1"])
-            .await;
+    let out = common::run_eccli(&[
+        "--server",
+        &url,
+        "--json",
+        "--yes",
+        "cancel-election",
+        "-e",
+        "el-1",
+    ])
+    .await;
     assert!(out.status.success());
     let v = json(&out);
     assert_eq!(v["ok"], true);
@@ -114,9 +129,17 @@ async fn cancel_without_yes_refuses_in_json() {
 #[tokio::test]
 async fn generate_tokens_prints_count() {
     let url = common::start_fake().await;
-    let out =
-        common::run_eccli(&["--server", &url, "--json", "generate-tokens", "-e", "el-1", "-c", "3"])
-            .await;
+    let out = common::run_eccli(&[
+        "--server",
+        &url,
+        "--json",
+        "generate-tokens",
+        "-e",
+        "el-1",
+        "-c",
+        "3",
+    ])
+    .await;
     assert!(out.status.success());
     let v = json(&out);
     assert_eq!(v["count"], 3);
@@ -129,7 +152,15 @@ async fn generate_tokens_writes_output_file() {
     let path = std::env::temp_dir().join(format!("eccli-toks-{}.txt", std::process::id()));
     let path_str = path.to_str().unwrap();
     let out = common::run_eccli(&[
-        "--server", &url, "generate-tokens", "-e", "el-1", "-c", "4", "-o", path_str,
+        "--server",
+        &url,
+        "generate-tokens",
+        "-e",
+        "el-1",
+        "-c",
+        "4",
+        "-o",
+        path_str,
     ])
     .await;
     assert!(out.status.success());
@@ -143,8 +174,7 @@ async fn generate_tokens_writes_output_file() {
 #[tokio::test]
 async fn list_tokens_summarizes_usage() {
     let url = common::start_fake().await;
-    let out =
-        common::run_eccli(&["--server", &url, "--json", "list-tokens", "-e", "el-1"]).await;
+    let out = common::run_eccli(&["--server", &url, "--json", "list-tokens", "-e", "el-1"]).await;
     assert!(out.status.success());
     let v = json(&out);
     assert_eq!(v["used"], 1);
