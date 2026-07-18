@@ -5,6 +5,7 @@ use clap::{ArgGroup, Parser, Subcommand};
 
 use crate::client::EcClient;
 use crate::commands::{candidate, election, token};
+use crate::error::Reported;
 use crate::output::{self, OutputMode};
 
 #[derive(Parser)]
@@ -132,9 +133,17 @@ pub async fn run() -> Result<()> {
     let mode = OutputMode::resolve(cli.json);
 
     if let Err(e) = execute(cli, mode).await {
-        match mode {
-            OutputMode::Json => output::emit_json_error(&e.to_string()),
-            OutputMode::Human { .. } => eprintln!("Error: {e:#}"),
+        // `Reported` errors already rendered their own details; printing again
+        // would emit a second JSON document on the `--json` path. Scan the whole
+        // cause chain so a future `.context(..)` wrapper cannot silently
+        // reintroduce the duplicate-output bug.
+        if !e.chain().any(|cause| cause.is::<Reported>()) {
+            match mode {
+                // `{:#}` so JSON consumers get the same full cause chain the
+                // human path prints, not just the outermost context.
+                OutputMode::Json => output::emit_json_error(&format!("{e:#}")),
+                OutputMode::Human { .. } => eprintln!("Error: {e:#}"),
+            }
         }
         std::process::exit(1);
     }
