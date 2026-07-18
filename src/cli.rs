@@ -4,7 +4,7 @@ use anyhow::Result;
 use clap::{ArgGroup, Parser, Subcommand};
 
 use crate::client::EcClient;
-use crate::commands::{candidate, election};
+use crate::commands::{candidate, election, token};
 
 #[derive(Parser)]
 #[command(
@@ -95,6 +95,26 @@ pub enum Commands {
         #[arg(short, long)]
         election_id: String,
     },
+
+    /// Generate anonymous registration tokens for an election.
+    GenerateTokens {
+        #[arg(short, long)]
+        election_id: String,
+
+        /// Number of tokens to generate (the ec allows 1..=10000).
+        #[arg(short, long, value_parser = clap::value_parser!(u32).range(1..=10_000))]
+        count: u32,
+
+        /// Optional path to write the raw tokens (one per line). They are shown only once.
+        #[arg(short, long)]
+        output: Option<std::path::PathBuf>,
+    },
+
+    /// List registration tokens for an election (ids + used status).
+    ListTokens {
+        #[arg(short, long)]
+        election_id: String,
+    },
 }
 
 /// Parse arguments, connect to the ec daemon, and dispatch the command.
@@ -135,5 +155,11 @@ pub async fn run() -> Result<()> {
         Commands::CancelElection { election_id } => {
             election::cancel(&mut client, election_id).await
         }
+        Commands::GenerateTokens {
+            election_id,
+            count,
+            output,
+        } => token::generate(&mut client, election_id, count, output).await,
+        Commands::ListTokens { election_id } => token::list(&mut client, election_id).await,
     }
 }
