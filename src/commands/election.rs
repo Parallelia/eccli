@@ -6,7 +6,7 @@ use serde_json::json;
 
 use crate::candidates::{self, CandidateSpec};
 use crate::client::EcClient;
-use crate::error::friendly;
+use crate::error::{friendly, Reported};
 use crate::output::{self, OutputMode};
 use crate::proto::{
     AddCandidateRequest, AddElectionRequest, ElectionIdRequest, ElectionResponse, Empty,
@@ -105,12 +105,17 @@ pub async fn create(
             });
             match client.inner().add_candidate(req).await {
                 Ok(_) => results.push((c.id, c.name, true, None)),
+                // Route through `friendly` like every other RPC so a failing
+                // candidate still gets the actionable auth/connectivity hint.
                 Err(status) => {
-                    results.push((c.id, c.name, false, Some(status.message().to_string())))
+                    results.push((c.id, c.name, false, Some(friendly(status).to_string())))
                 }
             }
         }
     }
+    // The election itself exists at this point; report every candidate outcome
+    // and only then fail, so a partial success is never silently swallowed.
+    let failures = results.iter().filter(|(_, _, ok, _)| !ok).count();
 
     match mode {
         OutputMode::Json => {
@@ -121,8 +126,13 @@ pub async fn create(
                 )
                 .collect();
             let mut obj = election_json(&election);
-            obj["ok"] = json!(true);
+            obj["ok"] = json!(failures == 0);
             obj["candidates"] = json!(candidates);
+            // Keep the key set stable: `null` rather than absent on success.
+            obj["error"] = match failures {
+                0 => serde_json::Value::Null,
+                n => json!(format!("failed to add {n} candidate(s)")),
+            };
             output::emit_json(obj);
         }
         OutputMode::Human { color } => {
@@ -152,8 +162,15 @@ pub async fn create(
                         );
                     }
                 }
+                if failures > 0 {
+                    output::failure(color, &format!("failed to add {failures} candidate(s)"));
+                }
             }
         }
+    }
+
+    if failures > 0 {
+        return Err(Reported.into());
     }
     Ok(())
 }
@@ -216,10 +233,14 @@ pub async fn cancel(client: &mut EcClient, mode: OutputMode, election_id: String
         .into_inner();
 
     match mode {
+        // A refusal returns `Reported`, which suppresses the generic
+        // `emit_json_error` path — so this document must carry `error` itself
+        // or JSON consumers get a failure with no `.error` to read.
         OutputMode::Json => output::emit_json(json!({
             "ok": status.success,
             "election_id": election_id,
             "message": status.message,
+            "error": if status.success { serde_json::Value::Null } else { json!(status.message) },
         })),
         OutputMode::Human { color } => {
             if status.success {
@@ -228,6 +249,11 @@ pub async fn cancel(client: &mut EcClient, mode: OutputMode, election_id: String
                 output::failure(color, &status.message);
             }
         }
+    }
+
+    // A refused cancellation must not exit 0 — the election is still live.
+    if !status.success {
+        return Err(Reported.into());
     }
     Ok(())
 }

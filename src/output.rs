@@ -55,7 +55,10 @@ pub fn success(color: bool, msg: &str) {
 
 /// Print a failure line (`❌ msg`), optionally colored.
 pub fn failure(color: bool, msg: &str) {
-    println!("{} {msg}", red("❌", color));
+    // Failures go to stderr per the documented stdout/stderr contract: callers
+    // returning `Reported` suppress the later error rendering, so this is the
+    // only place the message is emitted.
+    eprintln!("{} {msg}", red("❌", color));
 }
 
 /// Print a warning line (`⚠️ msg`), optionally colored.
