@@ -194,18 +194,22 @@ eccli --json list-elections | jq '.elections[].id'
 ## Example workflow
 
 ```sh
-# 1. Create the election (capture the id from the output)
-eccli --json create-election -n "Board 2025" --start-time 300 --duration 86400 \
-  --rules-id plurality --candidates-file candidates.json | jq -r .id
+set -euo pipefail
+
+# 1. Create the election and capture its id.
+#    `jq -e` exits non-zero when `.id` is absent, so a failed creation stops
+#    here instead of leaving ID as "null" and cascading into the next steps.
+ID=$(eccli --json create-election -n "Board 2025" --start-time 300 --duration 86400 \
+  --rules-id plurality --candidates-file candidates.json | jq -er .id)
 
 # 2. (Optionally) add more candidates
-eccli add-candidate -e <ID> -c 4 --name "Write-in"
+eccli add-candidate -e "$ID" -c 4 --name "Write-in"
 
 # 3. Issue registration tokens for your voters
-eccli generate-tokens -e <ID> -c 500 -o tokens.txt
+eccli generate-tokens -e "$ID" -c 500 -o tokens.txt
 
 # 4. Audit token usage during/after the election
-eccli list-tokens -e <ID>
+eccli list-tokens -e "$ID"
 ```
 
 ## Development
