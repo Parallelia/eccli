@@ -223,7 +223,8 @@ eccli --server http://127.0.0.1:50051 list-elections
 ```
 
 Connections give up after 10 seconds, so a firewalled or hung endpoint fails with
-`Unavailable` instead of hanging indefinitely.
+`failed to connect to ec gRPC server at …` (followed by the underlying transport
+error) instead of hanging indefinitely.
 
 ## Time formats
 
