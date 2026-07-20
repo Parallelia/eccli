@@ -47,6 +47,20 @@ eccli generate-tokens --election-id <ID> --count 100 --output tokens.txt
 
 ## Commands
 
+Every command accepts the global options above. Short flags are consistent across
+commands: `-e` is always `--election-id` and `-n` always `--name`. Note that `-c` is
+`--candidate-id` for `add-candidate` but `--count` for `generate-tokens`.
+
+### `check`
+
+Verify connectivity — and, when the ec requires auth, that your token is accepted.
+It lists elections and reports how many are visible, so a `0` count still means the
+connection succeeded.
+
+```sh
+eccli check
+```
+
 ### `create-election`
 
 Create a new election. Exactly one of `--duration` or `--end-time` is required.
@@ -71,6 +85,14 @@ eccli create-election --name "My Election" \
 Candidates are optional at creation; the client adds each one via a follow-up call and
 reports per-candidate success. You can also add them later with `add-candidate`.
 
+`--candidates-file` and `--candidates-json` are mutually exclusive — passing both is an
+error. Inline JSON is handy for short lists:
+
+```sh
+eccli create-election -n "Quick Poll" --start-time 60 --duration 3600 \
+  --candidates-json '[{"id":1,"name":"Yes"},{"id":2,"name":"No"}]'
+```
+
 **`candidates.json` format** (ids must be `0–255`):
 
 ```json
@@ -80,11 +102,19 @@ reports per-candidate success. You can also add them later with `add-candidate`.
 ]
 ```
 
+Because the election is created first and candidates are added afterwards, a candidate
+failure leaves the election in place. `create-election` reports each outcome and exits
+non-zero, so re-add only the ones that failed with `add-candidate` — do not re-run
+`create-election`, which would create a second election.
+
 ### `add-candidate`
 
 ```sh
 eccli add-candidate --election-id <ID> --candidate-id 4 --name "Independent"
 ```
+
+`--candidate-id` must be `0–255` (the ec stores it as a `u8`). The election must still
+be open; the ec rejects additions once voting has started.
 
 ### `get-election`
 
@@ -110,6 +140,10 @@ Prompts for confirmation unless `--yes` is given.
 eccli cancel-election --election-id <ID> --yes
 ```
 
+The prompt needs a terminal. In a script, a pipeline, or a CI job — anywhere stdin is
+not a TTY — the command fails rather than assuming an answer, so `--yes` is required
+there. Answering anything other than `y`/`yes` aborts without contacting the ec.
+
 ### `generate-tokens`
 
 Issue anonymous **registration tokens** for an election (see the model note below).
@@ -129,6 +163,12 @@ and distribute them securely. The file is written atomically and owner-only (`06
 a symlink occupies the path it is replaced rather than followed. On non-Unix platforms,
 where those permissions cannot be enforced, `--output` is refused and the tokens are
 printed instead so none are lost.
+
+The same fallback covers *any* failed write (unwritable directory, full disk): the ec
+has already minted the tokens, so eccli prints them to stdout and exits non-zero rather
+than losing credentials it can never recover. If `generate-tokens` fails, capture the
+output before retrying — a retry mints a **new** batch, it does not re-issue the old one.
+In `--json` mode the tokens appear inline under `.tokens` whenever `.saved_to` is `null`.
 
 ### `list-tokens`
 
@@ -162,6 +202,29 @@ eccli list-elections
 
 Without a token against an auth-enabled server you'll get a clear `Unauthenticated` error.
 
+The token is read from the environment by default, so prefer `EC_ADMIN_TOKEN` over
+`--token` on shared machines — an argument is visible to anyone who can run `ps`.
+
+## Transport and TLS
+
+**eccli does not support TLS yet.** All traffic is plaintext HTTP/2, which matters
+because both the admin token and freshly generated registration tokens travel over it.
+
+- `https://` URLs are **rejected outright**. No TLS is compiled in, so honoring one
+  would silently send cleartext to a port the operator believes is encrypted.
+- Non-local `http://` hosts connect but print a cleartext warning to stderr. Loopback
+  addresses (`127.0.0.0/8`, `::1`, `localhost`) are considered local and stay quiet.
+
+To administer a remote ec, tunnel the connection and point eccli at the local end:
+
+```sh
+ssh -N -L 50051:127.0.0.1:50051 operator@ec.example.org &
+eccli --server http://127.0.0.1:50051 list-elections
+```
+
+Connections give up after 10 seconds, so a firewalled or hung endpoint fails with
+`Unavailable` instead of hanging indefinitely.
+
 ## Time formats
 
 `--start-time` and `--end-time` accept two forms:
@@ -190,6 +253,47 @@ In `--json` mode destructive commands never prompt; they require `--yes` explici
 ```sh
 eccli --json list-elections | jq '.elections[].id'
 ```
+
+### JSON fields by command
+
+Every document has `ok`; failures add `error`. Keys are stable — fields that do not
+apply are `null` rather than absent, so `jq` filters never break between runs.
+
+| Command | Fields |
+|---|---|
+| `check` | `elections_visible` |
+| `create-election` | election fields (below), plus `candidates[]` of `{id, name, ok, error}` |
+| `add-candidate` | `election_id`, `candidate_id`, `name` |
+| `get-election` | election fields (below) |
+| `list-elections` | `elections[]`, each with the election fields |
+| `cancel-election` | `election_id`, `message` |
+| `generate-tokens` | `count`, `saved_to`, `tokens[]` (`null` when saved to a file) |
+| `list-tokens` | `used`, `total`, `tokens[]` of `{token_id, used}` |
+
+An election object carries `id`, `name`, `status`, `rules_id`, `start_time`, `end_time`,
+`created_at`, and `rsa_pub_key`. Timestamps are unix seconds in JSON; human output
+renders them as UTC.
+
+```sh
+# Which tokens are still unredeemed?
+eccli --json list-tokens -e "$ID" | jq -r '.tokens[] | select(.used | not) | .token_id'
+
+# Which candidates failed to be added?
+eccli --json create-election -n "Board" --start-time 60 --duration 3600 \
+  --candidates-file candidates.json | jq -r '.candidates[] | select(.ok | not) | .name'
+```
+
+## Troubleshooting
+
+Errors from the ec carry an actionable hint:
+
+| Message | Cause | Fix |
+|---|---|---|
+| `Unauthenticated` | The ec runs with `EC_ADMIN_TOKEN`, your call had no valid token. | Pass `--token` or export `EC_ADMIN_TOKEN`. |
+| `Unavailable` | The daemon is not reachable at `--server`. | Check the ec is running and the URL/port are right. |
+| `NotFound` | The election id does not exist. | `list-elections` shows valid ids. |
+| `does not support TLS yet` | You passed an `https://` URL. | Use `http://` over a tunnel — see [Transport and TLS](#transport-and-tls). |
+| `refusing to proceed without confirmation` | A destructive command had no TTY to prompt on. | Pass `--yes`. |
 
 ## Example workflow
 
