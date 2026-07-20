@@ -13,6 +13,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Neither job pushes, and both execute repository-controlled code
+          # (build scripts, tests). Don't leave the token in .git/config.
+          persist-credentials: false
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - uses: dtolnay/rust-toolchain@stable
@@ -27,3 +31,22 @@ jobs:
         run: cargo build --verbose
       - name: Test
         run: cargo test --verbose
+
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Neither job pushes, and both execute repository-controlled code
+          # (build scripts, tests). Don't leave the token in .git/config.
+          persist-credentials: false
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Coverage (fail under 80% lines)
+        run: cargo llvm-cov --summary-only --fail-under-lines 80
