@@ -53,7 +53,10 @@ Candidates supplied at creation time use the shape `[{"id": 1, "name": "Alice"}]
 - `list-tokens --election-id <ID>`
 
 Generated tokens are secret and displayed only once. Prefer `--output` to write them
-to a file rather than leaving them in terminal scrollback or shell history.
+to a file rather than leaving them in terminal scrollback or shell history. The file is
+written atomically and owner-only (`0600`); if a symlink occupies the path it is
+replaced rather than followed. On non-Unix platforms, where those permissions cannot be
+enforced, `--output` is refused and the tokens are printed instead so none are lost.
 
 ## Output modes and exit codes
 
@@ -65,6 +68,11 @@ Every response carries an `ok` boolean; failures add an `error` string. A comman
 exits `0` only when `ok` is `true`. Notably, `create-election` reports each candidate
 outcome and still exits non-zero if any candidate failed to be added, and
 `cancel-election` exits non-zero when the ec refuses the cancellation.
+
+Argument errors are part of that contract: with `--json`, a malformed invocation emits
+an `{"ok": false, "error": ...}` document and exits `1` instead of clap's usage text.
+Without `--json`, usage errors keep clap's behavior — human-readable text on stderr and
+exit `2`. `--help` and `--version` always print normally and exit `0`.
 
 In `--json` mode destructive commands never prompt; they require `--yes` explicitly.
 

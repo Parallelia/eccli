@@ -32,7 +32,15 @@ fn host_of(url: &str) -> Option<&str> {
 /// Whether traffic to `host` stays on the local machine, where the lack of
 /// transport encryption does not expose credentials to the network.
 fn is_local_host(host: &str) -> bool {
-    matches!(host, "localhost" | "::1" | "[::1]") || host.starts_with("127.")
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    // Parse rather than prefix-match: a domain like `127.example.com` is not
+    // local, and IPv6 literals arrive bracketed from `host_of`.
+    let literal = host.trim_matches(|c| c == '[' || c == ']');
+    literal
+        .parse::<std::net::IpAddr>()
+        .is_ok_and(|ip| ip.is_loopback())
 }
 
 /// A connected Admin client plus the optional pre-parsed auth header.
@@ -139,8 +147,19 @@ mod tests {
         assert!(is_local_host("127.1.2.3"));
         assert!(is_local_host("localhost"));
         assert!(is_local_host("[::1]"));
+        assert!(is_local_host("::1"));
+        assert!(is_local_host("LocalHost"));
         assert!(!is_local_host("ec.example.org"));
         assert!(!is_local_host("10.0.0.5"));
+    }
+
+    #[test]
+    fn domains_that_merely_look_loopback_are_not_local() {
+        // A prefix match on "127." would wrongly suppress the cleartext warning
+        // for these public names.
+        assert!(!is_local_host("127.example.com"));
+        assert!(!is_local_host("127.0.0.1.evil.example"));
+        assert!(!is_local_host("localhost.evil.example"));
     }
 
     #[tokio::test]

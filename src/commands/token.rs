@@ -26,27 +26,67 @@ pub fn format_tokens_file(tokens: &[String]) -> String {
 ///
 /// `fs::write` would create the file at the process umask — commonly `0644`,
 /// and `0664` under a `002` umask — leaving one-time registration tokens
-/// readable by every other local user. These are voter credentials, so the file
-/// is created `0600` and an existing file is tightened before the write.
+/// readable by every other local user. Opening `path` directly is also unsafe:
+/// in a shared output directory it may be a symlink, and we would truncate and
+/// chmod its target instead. These are voter credentials, so the content goes
+/// to an exclusively-created `0600` temp file alongside `path` and is then
+/// renamed into place. `rename` replaces the symlink itself rather than
+/// following it, and it is atomic, so readers never observe a half-written
+/// token list.
 #[cfg(unix)]
 fn write_secret_file(path: &Path, contents: &str) -> std::io::Result<()> {
     use std::io::Write;
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    use std::os::unix::fs::OpenOptionsExt;
 
+    let file_name = path.file_name().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("'{}' is not a file path", path.display()),
+        )
+    })?;
+    let mut tmp = match path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        Some(dir) => dir.to_path_buf(),
+        None => PathBuf::from("."),
+    };
+    tmp.push(format!(
+        ".{}.eccli-{}.tmp",
+        file_name.to_string_lossy(),
+        std::process::id()
+    ));
+
+    // `create_new` fails rather than reusing an attacker-planted temp path.
     let mut file = fs::OpenOptions::new()
         .write(true)
-        .create(true)
-        .truncate(true)
+        .create_new(true)
         .mode(0o600)
-        .open(path)?;
-    // `.mode()` applies only when the file is newly created.
-    file.set_permissions(fs::Permissions::from_mode(0o600))?;
-    file.write_all(contents.as_bytes())
+        .open(&tmp)?;
+
+    let result = file
+        .write_all(contents.as_bytes())
+        .and_then(|()| file.sync_all())
+        .and_then(|()| fs::rename(&tmp, path));
+    if result.is_err() {
+        // Never leave secrets behind in the temp file.
+        let _ = fs::remove_file(&tmp);
+    }
+    result
 }
 
+/// Refuse to persist tokens where owner-only permissions cannot be guaranteed.
+///
+/// Rather than silently writing voter credentials at whatever ACL the platform
+/// inherits, `--output` is rejected and the caller falls back to printing the
+/// tokens, which the operator can then store deliberately.
 #[cfg(not(unix))]
-fn write_secret_file(path: &Path, contents: &str) -> std::io::Result<()> {
-    fs::write(path, contents)
+fn write_secret_file(path: &Path, _contents: &str) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        format!(
+            "refusing to write secret tokens to '{}': eccli cannot enforce owner-only \
+             file permissions on this platform",
+            path.display()
+        ),
+    ))
 }
 
 pub async fn generate(
@@ -214,6 +254,51 @@ mod tests {
 
             assert_eq!(mode_of(&path), 0o600);
             assert_eq!(fs::read_to_string(&path).unwrap(), "tok\n");
+            fs::remove_file(&path).unwrap();
+        }
+
+        #[test]
+        fn symlinked_output_leaves_the_target_untouched() {
+            let victim = temp_path("victim");
+            let link = temp_path("link");
+            let _ = fs::remove_file(&victim);
+            let _ = fs::remove_file(&link);
+            fs::write(&victim, "important").unwrap();
+            fs::set_permissions(&victim, fs::Permissions::from_mode(0o644)).unwrap();
+            std::os::unix::fs::symlink(&victim, &link).unwrap();
+
+            write_secret_file(&link, "tok\n").unwrap();
+
+            // The rename replaced the symlink itself; the target is unchanged.
+            assert_eq!(fs::read_to_string(&victim).unwrap(), "important");
+            assert_eq!(mode_of(&victim), 0o644);
+            assert!(!fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            assert_eq!(fs::read_to_string(&link).unwrap(), "tok\n");
+            assert_eq!(mode_of(&link), 0o600);
+
+            fs::remove_file(&victim).unwrap();
+            fs::remove_file(&link).unwrap();
+        }
+
+        #[test]
+        fn no_temp_file_is_left_behind() {
+            let path = temp_path("leftover");
+            let _ = fs::remove_file(&path);
+
+            write_secret_file(&path, "tok\n").unwrap();
+
+            let tmp = path.with_file_name(format!(
+                ".{}.eccli-{}.tmp",
+                path.file_name().unwrap().to_string_lossy(),
+                std::process::id()
+            ));
+            assert!(
+                !tmp.exists(),
+                "temp file must not survive a successful write"
+            );
             fs::remove_file(&path).unwrap();
         }
     }

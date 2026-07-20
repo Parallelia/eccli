@@ -233,10 +233,14 @@ pub async fn cancel(client: &mut EcClient, mode: OutputMode, election_id: String
         .into_inner();
 
     match mode {
+        // A refusal returns `Reported`, which suppresses the generic
+        // `emit_json_error` path — so this document must carry `error` itself
+        // or JSON consumers get a failure with no `.error` to read.
         OutputMode::Json => output::emit_json(json!({
             "ok": status.success,
             "election_id": election_id,
             "message": status.message,
+            "error": if status.success { serde_json::Value::Null } else { json!(status.message) },
         })),
         OutputMode::Human { color } => {
             if status.success {
