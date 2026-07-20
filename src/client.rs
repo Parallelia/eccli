@@ -4,12 +4,44 @@
 //! `authorization: Bearer <token>` metadata expected by the `ec` daemon when
 //! `EC_ADMIN_TOKEN` is configured server-side.
 
-use anyhow::{Context, Result};
+use std::time::Duration;
+
+use anyhow::{bail, Context, Result};
 use tonic::metadata::{Ascii, MetadataValue};
 use tonic::transport::Channel;
 use tonic::Request;
 
 use crate::proto::admin_client::AdminClient;
+
+/// Give up on an unresponsive endpoint rather than hanging forever: a routable
+/// but silently-dropping address (firewall, hung proxy) would otherwise never
+/// return, so the `Unavailable` hint would never be reached.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Extract the host (without port) from a `scheme://host[:port][/path]` URL.
+fn host_of(url: &str) -> Option<&str> {
+    let authority = url.split("://").nth(1)?.split('/').next()?;
+    // IPv6 literals are bracketed and contain colons, so handle them first.
+    if authority.starts_with('[') {
+        let end = authority.find(']')?;
+        return Some(&authority[..=end]);
+    }
+    authority.split(':').next()
+}
+
+/// Whether traffic to `host` stays on the local machine, where the lack of
+/// transport encryption does not expose credentials to the network.
+fn is_local_host(host: &str) -> bool {
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    // Parse rather than prefix-match: a domain like `127.example.com` is not
+    // local, and IPv6 literals arrive bracketed from `host_of`.
+    let literal = host.trim_matches(|c| c == '[' || c == ']');
+    literal
+        .parse::<std::net::IpAddr>()
+        .is_ok_and(|ip| ip.is_loopback())
+}
 
 /// A connected Admin client plus the optional pre-parsed auth header.
 pub struct EcClient {
@@ -21,9 +53,28 @@ impl EcClient {
     /// Connect to `server` (e.g. `http://127.0.0.1:50051`). When `token` is a
     /// non-empty string, every request carries `authorization: Bearer <token>`.
     pub async fn connect(server: &str, token: Option<&str>) -> Result<Self> {
+        // No TLS feature is compiled in, so tonic would happily send an
+        // `https://` URL as plaintext HTTP/2. Fail loudly instead of silently
+        // downgrading a connection the operator believes is encrypted.
+        if server.starts_with("https://") {
+            bail!(
+                "eccli does not support TLS yet, and would send traffic to {server} in cleartext\
+                 \n  hint: use http:// over a trusted network, or tunnel it (e.g. ssh -L)"
+            );
+        }
+        if let Some(host) = host_of(server) {
+            if !is_local_host(host) {
+                eprintln!(
+                    "⚠️  Warning: {host} is not local and the connection is unencrypted — \
+                     the admin token and any generated registration tokens are sent in cleartext."
+                );
+            }
+        }
+
         let auth = build_auth(token)?;
         let channel = Channel::from_shared(server.to_string())
             .with_context(|| format!("invalid server URL: {server}"))?
+            .connect_timeout(CONNECT_TIMEOUT)
             .connect()
             .await
             .with_context(|| format!("failed to connect to ec gRPC server at {server}"))?;
@@ -77,5 +128,51 @@ mod tests {
     fn token_becomes_bearer_header() {
         let v = build_auth(Some("s3cret")).unwrap().unwrap();
         assert_eq!(v.to_str().unwrap(), "Bearer s3cret");
+    }
+
+    #[test]
+    fn host_is_extracted_without_port_or_path() {
+        assert_eq!(host_of("http://127.0.0.1:50051"), Some("127.0.0.1"));
+        assert_eq!(
+            host_of("http://ec.example.org/admin"),
+            Some("ec.example.org")
+        );
+        assert_eq!(host_of("http://[::1]:50051"), Some("[::1]"));
+        assert_eq!(host_of("not-a-url"), None);
+    }
+
+    #[test]
+    fn loopback_hosts_are_local() {
+        assert!(is_local_host("127.0.0.1"));
+        assert!(is_local_host("127.1.2.3"));
+        assert!(is_local_host("localhost"));
+        assert!(is_local_host("[::1]"));
+        assert!(is_local_host("::1"));
+        assert!(is_local_host("LocalHost"));
+        assert!(!is_local_host("ec.example.org"));
+        assert!(!is_local_host("10.0.0.5"));
+    }
+
+    #[test]
+    fn domains_that_merely_look_loopback_are_not_local() {
+        // A prefix match on "127." would wrongly suppress the cleartext warning
+        // for these public names.
+        assert!(!is_local_host("127.example.com"));
+        assert!(!is_local_host("127.0.0.1.evil.example"));
+        assert!(!is_local_host("localhost.evil.example"));
+    }
+
+    #[tokio::test]
+    async fn https_is_rejected_rather_than_downgraded() {
+        // No TLS feature is compiled in, so this must fail loudly instead of
+        // sending the admin token in cleartext.
+        // Matched rather than `unwrap_err`ed: `EcClient` intentionally has no
+        // `Debug` impl, so the auth token cannot leak through `{:?}`.
+        let msg = match EcClient::connect("https://ec.example.org:50051", Some("s3cret")).await {
+            Ok(_) => panic!("https:// must be rejected"),
+            Err(e) => e.to_string(),
+        };
+        assert!(msg.contains("does not support TLS"), "got: {msg}");
+        assert!(!msg.contains("s3cret"), "token must not leak into errors");
     }
 }
