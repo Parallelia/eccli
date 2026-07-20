@@ -159,11 +159,22 @@ pub async fn start_fake_with_auth(expected: &'static str) -> String {
     format!("http://{addr}")
 }
 
+/// Upper bound on a single `eccli` run. Every call here targets an in-process
+/// fake server over loopback, so a healthy run finishes in well under a second;
+/// this only exists so a command that blocks (an unpiped confirmation prompt, a
+/// server that never accepts) fails the test instead of hanging the whole test
+/// binary until the CI job times out.
+const RUN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Run the compiled `eccli` binary with the given args and capture its output.
 pub async fn run_eccli(args: &[&str]) -> std::process::Output {
-    tokio::process::Command::new(env!("CARGO_BIN_EXE_eccli"))
-        .args(args)
-        .output()
-        .await
-        .expect("failed to run eccli binary")
+    tokio::time::timeout(
+        RUN_TIMEOUT,
+        tokio::process::Command::new(env!("CARGO_BIN_EXE_eccli"))
+            .args(args)
+            .output(),
+    )
+    .await
+    .unwrap_or_else(|_| panic!("eccli did not finish within {RUN_TIMEOUT:?}: {args:?}"))
+    .expect("failed to run eccli binary")
 }

@@ -125,7 +125,10 @@ eccli generate-tokens --election-id <ID> --count 100 --output tokens.txt
 | `--output, -o` | Optional file to write the raw tokens, one per line. |
 
 Tokens are returned **once** and cannot be retrieved again — save them with `--output`
-and distribute them securely.
+and distribute them securely. The file is written atomically and owner-only (`0600`); if
+a symlink occupies the path it is replaced rather than followed. On non-Unix platforms,
+where those permissions cannot be enforced, `--output` is refused and the tokens are
+printed instead so none are lost.
 
 ### `list-tokens`
 
@@ -166,10 +169,23 @@ Without a token against an auth-enabled server you'll get a clear `Unauthenticat
 - **Relative** (`< 1_000_000_000`): seconds from now — `60` = 1 minute, `3600` = 1 hour.
 - **Absolute** (`>= 1_000_000_000`): a unix timestamp.
 
-## JSON output
+## Output modes and exit codes
 
-Pass `--json` for scripting. Every command emits a JSON object on success and on error
-(`{"ok": false, "error": "..."}`), and the process exits non-zero on failure.
+Human mode writes results to stdout and errors to stderr, colorized when stdout is a
+TTY. `--json` emits exactly one JSON document to stdout on every path — success or
+failure — so it is safe to pipe into `jq`.
+
+Every response carries an `ok` boolean; failures add an `error` string. A command
+exits `0` only when `ok` is `true`. Notably, `create-election` reports each candidate
+outcome and still exits non-zero if any candidate failed to be added, and
+`cancel-election` exits non-zero when the ec refuses the cancellation.
+
+Argument errors are part of that contract: with `--json`, a malformed invocation emits
+an `{"ok": false, "error": ...}` document and exits `1` instead of clap's usage text.
+Without `--json`, usage errors keep clap's behavior — human-readable text on stderr and
+exit `2`. `--help` and `--version` always print normally and exit `0`.
+
+In `--json` mode destructive commands never prompt; they require `--yes` explicitly.
 
 ```sh
 eccli --json list-elections | jq '.elections[].id'
